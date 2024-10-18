@@ -1349,6 +1349,65 @@ web_del() {
 
 
 
+#!/bin/bash
+
+nginx_waf() {
+	mode=$1
+
+	if ! grep -q "kjlion/nginx:alpine" /home/web/docker-compose.yml; then
+		wget -O /home/web/nginx.conf "${gh_proxy}https://raw.githubusercontent.com/kejilion/nginx/main/nginx10.conf"
+	fi
+
+	# 根据 mode 参数来决定开启或关闭 WAF
+	if [ "$mode" == "on" ]; then
+		# 开启 WAF：去掉注释
+		sed -i 's|# load_module /etc/nginx/modules/ngx_http_modsecurity_module.so;|load_module /etc/nginx/modules/ngx_http_modsecurity_module.so;|' /home/web/nginx.conf > /dev/null 2>&1
+		sed -i 's|^\(\s*\)# modsecurity on;|\1modsecurity on;|' /home/web/nginx.conf > /dev/null 2>&1
+		sed -i 's|^\(\s*\)# modsecurity_rules_file /etc/nginx/modsec/modsecurity.conf;|\1modsecurity_rules_file /etc/nginx/modsec/modsecurity.conf;|' /home/web/nginx.conf > /dev/null 2>&1
+	elif [ "$mode" == "off" ]; then
+		# 关闭 WAF：加上注释
+		sed -i 's|^load_module /etc/nginx/modules/ngx_http_modsecurity_module.so;|# load_module /etc/nginx/modules/ngx_http_modsecurity_module.so;|' /home/web/nginx.conf > /dev/null 2>&1
+		sed -i 's|^\(\s*\)modsecurity on;|\1# modsecurity on;|' /home/web/nginx.conf > /dev/null 2>&1
+		sed -i 's|^\(\s*\)modsecurity_rules_file /etc/nginx/modsec/modsecurity.conf;|\1# modsecurity_rules_file /etc/nginx/modsec/modsecurity.conf;|' /home/web/nginx.conf > /dev/null 2>&1
+	else
+		echo "无效的参数：使用 'on' 或 'off'"
+		return 1
+	fi
+
+	# 检查 nginx 镜像并根据情况处理
+	if grep -q "kjlion/nginx:alpine" /home/web/docker-compose.yml; then
+		docker restart nginx
+	else
+		sed -i 's|nginx:alpine|kjlion/nginx:alpine|g' /home/web/docker-compose.yml
+		nginx_upgrade
+	fi
+
+}
+
+check_waf_status() {
+	# 检查 modsecurity 是否被注释
+	if grep -q "^\s*#\s*modsecurity on;" /home/web/nginx.conf; then
+		waf_status=""
+	elif grep -q "modsecurity on;" /home/web/nginx.conf; then
+		waf_status="WAF已开启"
+	else
+		waf_status=""
+	fi
+}
+
+
+check_cf_mode() {
+	local message  # 定义局部变量 message
+	if [ -f "/path/to/fail2ban/config/fail2ban/action.d/cloudflare-docker.conf" ]; then
+		CFmessage="cf模式已开启"
+	else
+		CFmessage=""
+	fi
+}
+
+
+
+
 has_ipv4_has_ipv6() {
 
 ip_address
@@ -1623,6 +1682,7 @@ send_stats "安装LDNMP环境"
 root_use
 ldnmp_install_status_one
 check_port
+clear
 echo -e "${gl_huang}LDNMP环境未安装，开始安装LDNMP环境...${gl_bai}"
 sleep 3
 install_dependency
@@ -1639,6 +1699,7 @@ send_stats "安装nginx环境"
 root_use
 ldnmp_install_status_one
 check_port
+clear
 echo -e "${gl_huang}nginx未安装，开始安装nginx环境...${gl_bai}"
 sleep 3
 install_dependency
@@ -5059,10 +5120,11 @@ linux_ldnmp() {
 	35)
 	  send_stats "LDNMP环境防御"
 	  while true; do
+		check_waf_status
+		check_cf_mode
 		if docker inspect fail2ban &>/dev/null ; then
-
 			  clear
-			  echo "服务器防御程序已启动"
+			  echo -e "服务器防御程序已启动 ${gl_lv}${CFmessage} ${waf_status}${gl_bai}"
 			  echo "------------------------"
 			  echo "1. 开启SSH防暴力破解              2. 关闭SSH防暴力破解"
 			  echo "3. 开启网站保护                   4. 关闭网站保护"
@@ -5073,6 +5135,8 @@ linux_ldnmp() {
 			  echo "11. 配置拦截参数"
 			  echo "------------------------"
 			  echo "21. cloudflare模式                22. 高负载开启5秒盾"
+			  echo "------------------------"
+			  echo "31. 开启WAF                       32. 关闭WAF"
 			  echo "------------------------"
 			  echo "9. 卸载防御程序"
 			  echo "------------------------"
@@ -5208,6 +5272,19 @@ linux_ldnmp() {
 					  fi
 
 					  ;;
+
+				  31)
+					  nginx_waf on
+					  echo "站点WAF已开启"
+					  send_stats "站点WAF已开启"
+					  ;;
+
+				  32)
+				  	  nginx_waf off
+					  echo "站点WAF已关闭"
+					  send_stats "站点WAF已关闭"
+					  ;;
+
 				  0)
 					  break
 					  ;;
@@ -5289,6 +5366,8 @@ linux_ldnmp() {
 				  docker exec -it redis redis-cli CONFIG SET maxmemory 512mb
 				  docker exec -it redis redis-cli CONFIG SET maxmemory-policy allkeys-lru
 
+				  optimize_balanced
+
 				  echo "LDNMP环境已设置成 标准模式"
 
 					  ;;
@@ -5318,6 +5397,8 @@ linux_ldnmp() {
 
 				  docker exec -it redis redis-cli CONFIG SET maxmemory 1024mb
 				  docker exec -it redis redis-cli CONFIG SET maxmemory-policy allkeys-lru
+
+				  optimize_web_server
 
 				  echo "LDNMP环境已设置成 高性能模式"
 
